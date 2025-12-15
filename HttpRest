@@ -1,0 +1,209 @@
+var __global = System.getContext() || (function () {
+    return this;
+}).call(null);
+var VROES = __global.__VROES || (__global.__VROES = System.getModule("com.vmware.pscoe.library.ecmascript").VROES()), exports = {};
+var URL_1 = VROES.importLazy("com.vmware.pscoe.library.ts.util/URL");
+var SHARED_SESSION = "Shared Session";
+var BASIC_AUTH = "Basic";
+var OAUTH_1 = "OAuth 1.0";
+var OAUTH_2 = "OAuth 2.0";
+var NTLM_AUTH = "NTLM";
+var KERBEROS_AUTH = "Kerberos";
+var DIGEST_AUTH = "Digest";
+var HttpRestHostBuilder = /** @class */ (function () {
+    function HttpRestHostBuilder(url) {
+        this.url = url;
+        this._proxyUse = false;
+        this._proxyHost = null;
+        this._proxyPort = 0;
+        this._transient = false;
+        this._hostVerification = false;
+        this._trustCert = false;
+        this._authParams = [];
+    }
+    HttpRestHostBuilder.prototype.name = function (name) {
+        this._name = name;
+        return this;
+    };
+    HttpRestHostBuilder.prototype.proxy = function (host, port) {
+        this._proxyUse = !!host;
+        this._proxyHost = host;
+        this._proxyPort = port;
+        return this;
+    };
+    HttpRestHostBuilder.prototype.transient = function () {
+        this._transient = true;
+        return this;
+    };
+    HttpRestHostBuilder.prototype.trustCert = function () {
+        this._trustCert = true;
+        return this;
+    };
+    /**
+      * Sets Basic authentication with Shared Session mode
+      * @param {string} username
+      * @param {string} password
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.basic = function (username, password) {
+        return this.setAuth(BASIC_AUTH, [SHARED_SESSION, username, password]);
+    };
+    /**
+      * Sets Digest authentication with Shared Session mode
+      * @param {string} username
+      * @param {string} password
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.digest = function (username, password) {
+        return this.setAuth(DIGEST_AUTH, [SHARED_SESSION, username, password]);
+    };
+    /**
+      * Sets Kerberos authentication with Shared Session mode
+      * @param {string} username
+      * @param {string} password
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.kerberos = function (username, password) {
+        return this.setAuth(KERBEROS_AUTH, [SHARED_SESSION, username, password]);
+    };
+    /**
+      * Sets OAuth 1.0 authentication
+      * @param {string} consumerKey
+      * @param {string} consumerSecret
+      * @param {string} accessToken
+      * @param {string} accessTokenSecret
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.oauth1 = function (consumerKey, consumerSecret, accessToken, accessTokenSecret) {
+        return this.setAuth(OAUTH_1, [consumerKey, consumerSecret, accessToken, accessTokenSecret]);
+    };
+    /**
+      * Sets OAuth 2.0 authentication
+      * @param {string} oauth2Token
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.oauth2 = function (oauth2Token) {
+        return this.setAuth(OAUTH_2, [oauth2Token]);
+    };
+    /**
+      * Sets NTLM authentication with Shared Session mode
+      * @param {string} authUserName
+      * @param {string} authPassword
+      * @param {string} workstation
+      * @param {string} domain
+      *
+      * @return {this}
+      */
+    HttpRestHostBuilder.prototype.ntlm = function (authUserName, authPassword, workstation, domain) {
+        return this.setAuth(NTLM_AUTH, [SHARED_SESSION, authUserName, authPassword, workstation, domain]);
+    };
+    HttpRestHostBuilder.prototype.verifyHostname = function () {
+        this._hostVerification = true;
+        return this;
+    };
+    HttpRestHostBuilder.prototype.newRestHost = function () {
+        var name = this._name ||
+            this.url
+                .replace(/https:\/\//i, "")
+                .replace(/http:\/\//i, "")
+                .replace(/\W/g, "_");
+        var host = RESTHostManager.createHostSupportingParallelRequests(name);
+        // Generate a friendly name for a RESTHost or RESTOperation from a given URL,
+        // removing "HTTP" and "HTTPS", and replacing non-words with '_'
+        host.name = name;
+        host.url = this.normalizedUrl(this.url);
+        host.hostVerification = this._hostVerification;
+        if (this._proxyUse) {
+            host.proxyHost = this._proxyHost;
+            host.proxyPort = this._proxyPort;
+        }
+        if (this._authType) {
+            host.authentication = RESTAuthenticationManager.createAuthentication(this._authType, this._authParams);
+        }
+        return host;
+    };
+    HttpRestHostBuilder.prototype.addIfCertMissingInTruststore = function () {
+        if (this._trustCert && this.url.toLowerCase().indexOf("https:") === 0) {
+            var importAction = eval("Config.getKeystores().getImportCAFromUrlAction()");
+            var model = importAction.getModel();
+            model.value = this.url;
+            if (this._proxyUse) {
+                var proxyHostHolder = importAction.getProxyHost();
+                proxyHostHolder.value = this._proxyHost;
+                var proxyPortHolder = importAction.getProxyPort();
+                proxyPortHolder.value = this._proxyPort + "";
+            }
+            var certValidationResult = importAction.validateCertificates();
+            // let certInfo = importAction.getCertInfo();
+            var isNotTrusted = certValidationResult.isNoChainOfTrust();
+            // let isCertificateExpired = certValidationResult.isCertificateExpired();
+            var isDomainWrong = certValidationResult.isWrongDomain();
+            // let certificateHostName = certValidationResult.getCertificateHostName();
+            var isNotValid = certValidationResult.isNotValid();
+            // let errorText = certValidationResult.getErrorText();
+            if (isDomainWrong || (isNotValid && !isNotTrusted)) {
+                importAction.execute();
+            }
+        }
+    };
+    HttpRestHostBuilder.prototype.normalizedUrl = function (url) {
+        var u = new URL_1._.URL(url);
+        if (!u.port) {
+            u.port = "https" == u.protocol ? "443" : "80";
+        }
+        if (u.page) {
+            while (VROES.Shims.stringEndsWith(u.page, "/")) {
+                u.page = u.page.substring(0, u.page.length - 1);
+            }
+        }
+        else if (u.path) {
+            while (VROES.Shims.stringEndsWith(u.path, "/")) {
+                u.path = u.path.substring(0, u.path.length - 1);
+            }
+        }
+        return u.getUrl();
+    };
+    HttpRestHostBuilder.prototype.buildTransientRestHost = function () {
+        var host = this.newRestHost();
+        host = RESTHostManager.createTransientHostFrom(host);
+        RESTHostManager.reloadConfiguration();
+        this.addIfCertMissingInTruststore();
+        return host;
+    };
+    HttpRestHostBuilder.prototype.findOrCreateRestHost = function () {
+        var _this = this;
+        var normalUrl = this.url && this.normalizedUrl(this.url);
+        var matchingHosts = RESTHostManager.getHosts()
+            .map(function (hostId) { return RESTHostManager.getHost(hostId); })
+            .filter(function (host) { return (normalUrl && _this.normalizedUrl(host.url) === normalUrl) || !normalUrl; })
+            .filter(function (host) { return _this._name === host.name; });
+        if (matchingHosts.length > 1) {
+            throw new Error("Found more than one host: " + JSON.stringify(matchingHosts.map(function (host) { return "url: " + _this.normalizedUrl(host.url) + ", name: " + host.name; })));
+        }
+        if (!matchingHosts.length) {
+            var host = this.newRestHost();
+            host = RESTHostManager.addHost(host);
+            this.addIfCertMissingInTruststore();
+            return host;
+        }
+        else {
+            return matchingHosts[0];
+        }
+    };
+    HttpRestHostBuilder.prototype.setAuth = function (authType, authParams) {
+        this._authType = authType;
+        this._authParams = authParams;
+        return this;
+    };
+    HttpRestHostBuilder.prototype.build = function () {
+        return this._transient ? this.buildTransientRestHost() : this.findOrCreateRestHost();
+    };
+    return HttpRestHostBuilder;
+}());
+exports.HttpRestHostBuilder = HttpRestHostBuilder;
+return exports;
