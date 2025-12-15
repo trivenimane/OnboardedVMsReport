@@ -1,0 +1,79 @@
+var __global = System.getContext() || (function () {
+    return this;
+}).call(null);
+var VROES = __global.__VROES || (__global.__VROES = System.getModule("com.vmware.pscoe.library.ecmascript").VROES()), tslib_1 = VROES.tslib, exports = {};
+var HttpClient_1 = VROES.importLazy("com.vmware.pscoe.library.ts.http/HttpClient");
+var VraConfigurationAccessor_1 = VROES.importLazy("com.vmware.pscoe.library.ts.vra.authentication.elements/config/VraConfigurationAccessor");
+/**
+ * HTTP bearer token is used to authenticate against vRealize Automation REST API
+ * The token expires in 24 hours by default
+ */
+var BearerTokenClient = /** @class */ (function (_super) {
+    tslib_1.__extends(BearerTokenClient, _super);
+    function BearerTokenClient(restHost, opts) {
+        var _this = _super.call(this, restHost, VROES.Shims.objectAssign({}, opts, { onBeforeRequest: function (req) { return _this.applyBearerToken(req, opts && opts.onBeforeRequest); } })) || this;
+        _this.configPath = opts.configPath;
+        return _this;
+    }
+    BearerTokenClient.prototype.synchronize = function (fn, scope, lockId) {
+        var owner = "vRAAuthenticator";
+        LockingSystem.lockAndWait(lockId, owner);
+        try {
+            fn.apply(scope);
+        }
+        finally {
+            LockingSystem.unlock(lockId, owner);
+        }
+    };
+    /**
+     * Return a bearer token. Force authentication if there is not such
+     */
+    BearerTokenClient.prototype.getBearerToken = function () {
+        var _this = this;
+        this.synchronize(function () {
+            var conf = new VraConfigurationAccessor_1._.VraConfigurationAccessor(_this.configPath);
+            _this.bearerToken = conf.getToken() && new Date().getTime() < conf.getExpiryDate() ? conf.getToken() : null;
+            if (!_this.bearerToken) {
+                _this._authenticate();
+            }
+        }, this, "com.vmware.pscoe.library.ts.vra.authentication");
+        return this.bearerToken;
+    };
+    BearerTokenClient.prototype.setBearerToken = function (token, expires_in) {
+        var conf = new VraConfigurationAccessor_1._.VraConfigurationAccessor(this.configPath);
+        var now = new Date();
+        now.setSeconds(now.getSeconds() + expires_in);
+        conf.set("token", token, null, false);
+        conf.set("expires_in", now.getTime(), null, false);
+        this.bearerToken = token;
+    };
+    /**
+     * Enrich the HttpRequest with the Authorization header
+     */
+    BearerTokenClient.prototype.applyBearerToken = function (req, prevHandler) {
+        if (!this.isAuthPath(req.path)) {
+            req.headers = VROES.Shims.objectAssign({}, req.headers, { Authorization: "Bearer " + this.getBearerToken() });
+        }
+        !!prevHandler && prevHandler(req);
+    };
+    BearerTokenClient.prototype.executeRequest = function (request) {
+        if (this.restHost.url.indexOf("api.mgmt.cloud.vmware.com:443") >= 0) {
+            var url = this.restHost.url.replace("api.mgmt.cloud.vmware.com:443", "api.mgmt.cloud.vmware.com");
+            if (url.indexOf("https://") >= 0) {
+                url = url.replace("https://", "");
+            }
+            else if (url.indexOf("http://") >= 0) {
+                url = url.replace("http://", "");
+            }
+            var pos = url.indexOf("/");
+            if (pos >= 0) {
+                url = url.substring(0, pos);
+            }
+            request.headers = VROES.Shims.objectAssign({}, request.headers, { Host: url });
+        }
+        return _super.prototype.executeRequest.call(this, request);
+    };
+    return BearerTokenClient;
+}(HttpClient_1._.HttpClientVro));
+exports.default = BearerTokenClient;
+return exports;
