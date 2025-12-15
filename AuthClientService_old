@@ -1,0 +1,181 @@
+var __global = System.getContext() || (function () {
+    return this;
+}).call(null);
+var VROES = __global.__VROES || (__global.__VROES = System.getModule("com.vmware.pscoe.library.ecmascript").VROES()), tslib_1 = VROES.tslib, exports = {};
+var HttpClient_1 = VROES.importLazy("com.vmware.pscoe.library.ts.http/HttpClient");
+var HttpClientBuilder_1 = VROES.importLazy("com.vmware.pscoe.library.ts.http/HttpClientBuilder");
+var AuthService_1 = VROES.importLazy("com.vmware.pscoe.ts.vra.identity/services/AuthService");
+var LoginService_1 = VROES.importLazy("com.vmware.pscoe.ts.vra.identity/services/LoginService");
+var BearerTokenClient_1 = VROES.importLazy("com.vmware.pscoe.library.ts.vra.authentication.actions/BearerTokenClient");
+var VraConfigurationAccessor_1 = VROES.importLazy("com.vmware.pscoe.library.ts.vra.authentication.elements/config/VraConfigurationAccessor");
+var LoginService_2 = VROES.importLazy("com.vmware.pscoe.ts.vra.iaas/services/LoginService");
+/**
+ * vRealize Automation Authentication Service
+ */
+var AuthClientService = /** @class */ (function (_super) {
+    tslib_1.__extends(AuthClientService, _super);
+    /**
+     * In case of non-default configuration is used a user can pass
+     * VraConfigurationAccessor compatible interface object
+     */
+    function AuthClientService(restHost, options) {
+        var _this = _super.call(this, restHost, options) || this;
+        _this.isCasAuth = false;
+        _this.authUrls = ["csp/gateway/am/api/login",
+            "/iaas/api/login",
+            "/csp/gateway/am/idp/auth/login",
+            "/csp/gateway/am/api/auth/api-tokens/authorize"];
+        if (options.authUrl) {
+            if (options.authUrl.indexOf("console.cloud.vmware.com") >= 0) {
+                _this.isCasAuth = true;
+            }
+            var builder = new HttpClientBuilder_1._.HttpClientVroBuilder(options.authUrl).trustCert();
+            if (options.proxyHost && options.proxyPort) {
+                builder.proxy(options.proxyHost, options.proxyPort);
+            }
+            if (options.isPersistent) {
+                builder.oauth2().name(AuthClientService.generateRestHostName(options.authUrl));
+            }
+            else {
+                builder.transient();
+            }
+            _this.authHttpClient = builder.build(HttpClient_1._.HttpClientVro, options);
+        }
+        else {
+            _this.authHttpClient = _this;
+        }
+        return _this;
+    }
+    AuthClientService.prototype.isAuthPath = function (path) {
+        return this.authUrls.some(function (x) {
+            return path.indexOf(x) != -1;
+        });
+    };
+    AuthClientService.prototype.getAccessRefreshTokenBody = function (token) {
+        var content = { "Content-Type": "application/x-www-form-urlencoded", "body_body": {} };
+        // From CAS 8.4 there is new token name
+        if (this.isCasAuth) {
+            content.body_body["api_token"] = token;
+        }
+        else {
+            // In vRA <= 8.4 refresh_token still works
+            content.body_body["refresh_token"] = token;
+        }
+        return content;
+    };
+    /**
+     * Authenticate and persist acquired Bearer token in local configuration.
+     * This method is thread-safe.
+     */
+    AuthClientService.prototype.authenticate = function () {
+        var _this = this;
+        this.synchronize(function () { return _this._authenticate(); }, this, "com.vmware.pscoe.library.ts.vra.authentication");
+    };
+    /**
+     * INTERNAL USE ONLY (protected internal)
+     * This method is NOT thread-safe.
+     */
+    AuthClientService.prototype._authenticate = function () {
+        var token = null;
+        var usingRefreshToken = false;
+        if (typeof this.credentials == "string") {
+            usingRefreshToken = true;
+            var auth = new AuthService_1._.AuthService(this.authHttpClient);
+            token = auth.getAccessTokenWithRefreshToken(this.getAccessRefreshTokenBody(this.credentials));
+        }
+        else {
+            var identityLoginService = new LoginService_1._.LoginService(this.authHttpClient);
+            // Need to use /csp/gateway/am/api/login
+            token = identityLoginService.login1({
+                query_access_token: true,
+                body_body: {
+                    username: this.credentials.username,
+                    password: this.credentials.password,
+                    domain: this.credentials.domain,
+                },
+            });
+        }
+        if (!token || !token.body || !token.body.refresh_token) {
+            var message = "" + (usingRefreshToken ? "existing refresh token" : "username and password");
+            throw new Error("Unable to get vRA access token via " + message + ": " + JSON.stringify(token) + ".");
+        }
+        // Based on vRA doc, iaasToken is needed
+        var iaasAuth = new LoginService_2._.LoginService(this);
+        var iaasTokenResponse = iaasAuth.retrieveAuthToken({
+            body_body: { refreshToken: token.body.refresh_token },
+        });
+        if (iaasTokenResponse.status !== 200 || !iaasTokenResponse.body.token) {
+            throw new Error("Unable to retrieve vRA AuthToken " + JSON.stringify(iaasTokenResponse));
+        }
+        // This token expires after 25 minutes 1500 seconds
+        this.setBearerToken(iaasTokenResponse.body.token, 1500);
+    };
+    AuthClientService.prototype.withCredentials = function (credentials) {
+        this.credentials = credentials;
+        return this;
+    };
+    /**
+     * Initialize the client with the default configuration
+     *
+     * @param {boolean} cspClientOnly - set to true to create a CSP-only REST client;
+     *     								useful for using vRA Cloud's /csp/gateway/* APIs
+     */
+    AuthClientService.withDefaultAuthentication = function (options, cspClientOnly) {
+        return AuthClientService.withAuthentication(options, cspClientOnly);
+    };
+    AuthClientService.withAuthentication = function (options, cspClientOnly, configPath) {
+        var conf = new VraConfigurationAccessor_1._.VraConfigurationAccessor(configPath);
+        var httpOptions = VROES.Shims.objectAssign({}, AuthClientService.getOptions(conf), options, { configPath: configPath });
+        var url = cspClientOnly === true
+            ? "https://" + conf.getAuthHostname() + ":" + conf.getAuthPort()
+            : "https://" + conf.getHostname() + ":" + conf.getPort();
+        var builder = new HttpClientBuilder_1._.HttpClientVroBuilder(url).trustCert();
+        if (httpOptions.proxyHost && httpOptions.proxyPort) {
+            builder.proxy(httpOptions.proxyHost, httpOptions.proxyPort);
+        }
+        if (httpOptions.isPersistent) {
+            builder.oauth2().name(AuthClientService.generateRestHostName(url));
+        }
+        else {
+            builder.transient();
+        }
+        var client = builder.build(AuthClientService, httpOptions);
+        if (conf.getRefreshToken()) {
+            client.withCredentials(conf.getRefreshToken());
+        }
+        else {
+            client.withCredentials({
+                username: conf.getUsername(),
+                password: conf.getPassword(),
+                domain: conf.getDomain(),
+            });
+        }
+        return client;
+    };
+    AuthClientService.getOptions = function (conf) {
+        var options = {};
+        if (conf.getAuthHostname()) {
+            options.authUrl = "https://" + conf.getAuthHostname() + ":" + conf.getAuthPort();
+        }
+        if (conf.getProxyHost()) {
+            options.proxyHost = conf.getProxyHost();
+        }
+        if (conf.getProxyPort()) {
+            options.proxyPort = conf.getProxyPort();
+        }
+        if (conf.getIsPersistent()) {
+            options.isPersistent = conf.getIsPersistent();
+        }
+        return options;
+    };
+    AuthClientService.generateRestHostName = function (url) {
+        var name = url
+            .replace(/https:\/\//i, "")
+            .replace(/http:\/\//i, "")
+            .replace(/\W/g, "_");
+        return name;
+    };
+    return AuthClientService;
+}(BearerTokenClient_1._.default));
+exports.default = AuthClientService;
+return exports;
